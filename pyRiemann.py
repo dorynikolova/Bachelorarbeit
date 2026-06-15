@@ -5,23 +5,18 @@ import pandas as pd
 import pyreadstat
 from scipy.io import loadmat
 import scipy.signal as sps
-from pyriemann.classification import MDM
 import mne
-from sklearn.decomposition import PCA
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
-from sklearn.ensemble import RandomForestClassifier
 from pyriemann.estimation import Covariances
 from pyriemann.utils.mean import mean_riemann
 from pyriemann.tangentspace import TangentSpace
-from sklearn.svm import SVC
 
-# =========================================================
-# CONFIG
-# =========================================================
+import time
+start = time.time()
 
 SFREQ = 1000
 DS_FACTOR = 4
@@ -41,13 +36,10 @@ def get_task(eeg_id):
     return "UNKNOWN"
 
 def bandpass_5_50(x, sfreq=SFREQ):
-    return mne.filter.filter_data(x, sfreq=sfreq, l_freq=5, h_freq=50, verbose=False)
+    return mne.filter.filter_data(x, sfreq=sfreq, l_freq=5, h_freq=50, verbose=False) 
 
 def downsample(x, factor):
     return sps.decimate(x, factor, axis=1, ftype="iir", zero_phase=True)
-
-def zscore_per_channel(x):
-    return (x - x.mean(axis=1, keepdims=True)) / (x.std(axis=1, keepdims=True) + 1e-8)
 
 def preprocess_signal(X, sfreq=SFREQ, ds_factor=DS_FACTOR):
     Xf = bandpass_5_50(X, sfreq=sfreq)
@@ -57,8 +49,6 @@ def preprocess_signal(X, sfreq=SFREQ, ds_factor=DS_FACTOR):
         sfreq_new = sfreq // ds_factor
     else:
         sfreq_new = sfreq
-
-    #Xf = zscore_per_channel(Xf)
     return Xf, sfreq_new
 
 def make_windows(X, win_len, step):
@@ -110,7 +100,6 @@ def extract_window_covariances_from_condition(X_cond, sfreq=SFREQ, ds_factor=DS_
     if len(windows) == 0:
         return None
 
-    # pyRiemann expects (n_trials, n_channels, n_times)
     epochs = np.stack(windows, axis=0)
     covs = Covariances(estimator="oas").fit_transform(epochs) # "lwf", "scm"
     return covs
@@ -145,8 +134,6 @@ def extract_subject_features(mat_path, eeg_id, sfreq=SFREQ, ds_factor=DS_FACTOR,
 
     X = Xraw if Xraw.shape[0] < Xraw.shape[1] else Xraw.T
 
-    # keep consistent with your project:
-    # open -> 0, closed -> 1
     open_blocks = split_into_contiguous_blocks(X, y, target_label=0)
     closed_blocks = split_into_contiguous_blocks(X, y, target_label=1)
 
@@ -177,6 +164,9 @@ def extract_subject_features(mat_path, eeg_id, sfreq=SFREQ, ds_factor=DS_FACTOR,
     open_covs_all = np.concatenate(open_covs_all, axis=0)
     closed_covs_all = np.concatenate(closed_covs_all, axis=0)
 
+    print(eeg_id, "open windows:", open_covs_all.shape[0])
+    print(eeg_id, "closed windows:", closed_covs_all.shape[0])
+
     cov_open = aggregate_covariances(open_covs_all)
     cov_closed = aggregate_covariances(closed_covs_all)
 
@@ -184,11 +174,11 @@ def extract_subject_features(mat_path, eeg_id, sfreq=SFREQ, ds_factor=DS_FACTOR,
     return cov_open, cov_closed
 
 # =========================================================
-# LOAD LABELS
+# LOADING LABELS
 # =========================================================
 
 df, meta = pyreadstat.read_sav(
-    "Bachelorarbeit/Clinical/ADWY_Clinical_Data.sav",
+    "Clinical/ADWY_Clinical_Data.sav",
     usecols=["EEG_ID", "Clinical"],
     apply_value_formats=False,
     formats_as_category=False
@@ -206,7 +196,7 @@ labels_df["Clinical"] = labels_df["Clinical"].astype("int8")
 print("Clinical label counts:")
 print(labels_df["Clinical"].value_counts())
 
-mat_paths = sorted(glob.glob("Bachelorarbeit/dataclean_2/dataclean/*.mat"))
+mat_paths = sorted(glob.glob("dataclean_2/dataclean/*.mat"))
 mat_df = pd.DataFrame({
     "mat_path": mat_paths,
     "EEG_ID": [Path(p).stem for p in mat_paths]
@@ -219,7 +209,7 @@ id2path = dict(zip(data_index["EEG_ID"], data_index["mat_path"]))
 id2label = dict(zip(data_index["EEG_ID"], data_index["Clinical"]))
 
 # =========================================================
-# BUILD SUBJECT MATRICES
+# SUBJECT MATRICES
 # =========================================================
 
 def make_xy(subj_list, condition):
@@ -263,35 +253,7 @@ def run_nested_cv(subject_ids, task_name, condition, seeds=(42,)):
         "logisticregression__C": [0.001, 0.01, 0.1, 1.0],
         "logisticregression__l1_ratio": [0.2, 0.5, 0.8],
     }
-    """pipe = make_pipeline(
-        TangentSpace(metric="riemann"),
-        StandardScaler(),
-        #PCA(random_state=42),
-        SVC(kernel="rbf", class_weight="balanced")
-    )
 
-    param_grid = {
-        #"pca__n_components": [5, 10, 15, 20],
-        "svc__C": [0.5, 1, 2, 3, 4, 5, 10],
-    }"""
-
-    """pipe = make_pipeline(
-        TangentSpace(metric="riemann"),
-        RandomForestClassifier(
-            class_weight="balanced",
-            random_state=42,
-            n_jobs=-1
-        )
-    )
-
-    param_grid = {
-        "randomforestclassifier__n_estimators": [200, 500],
-        "randomforestclassifier__max_depth": [None, 5, 10],
-        "randomforestclassifier__min_samples_split": [2, 5],
-        "randomforestclassifier__min_samples_leaf": [1, 2, 4],
-        "randomforestclassifier__max_features": ["sqrt", 0.5],
-    }
-"""
     all_seed_means = []
 
     for seed in seeds:
@@ -308,6 +270,7 @@ def run_nested_cv(subject_ids, task_name, condition, seeds=(42,)):
 
             train_subjects = subject_ids[train_idx]
             test_subjects = subject_ids[test_idx]
+            print("Fold", fold, "train subjects:", len(train_subjects), "test subjects:", len(test_subjects))
 
             X_train, y_train = make_xy(train_subjects, condition)
             X_test, y_test = make_xy(test_subjects, condition)
@@ -336,6 +299,18 @@ def run_nested_cv(subject_ids, task_name, condition, seeds=(42,)):
         inner_scores = np.array(inner_scores)
         outer_scores = np.array(outer_scores)
 
+        """plt.scatter(inner_scores, outer_scores)
+        plt.xlabel("Inner CV Balanced Accuracy")
+        plt.ylabel("Outer CV Balanced Accuracy")
+        plt.title("Inner vs Outer CV Scores")"""
+
+        """plt.scatter(inner_scores, outer_scores, color="steelblue", s=60)
+        plt.plot([0.3, 0.7], [0.3, 0.7], 'r--', label='y = x')
+        plt.legend()
+        plt.title(f"Inner vs Outer CV Scores ({task_name}, {condition})")
+        plt.grid(True)
+        plt.show()"""
+
         print("\nAggregated subject-level confusion matrix:")
         print(cm_total)
         print(f"Seed {seed} results:")
@@ -353,95 +328,6 @@ def run_nested_cv(subject_ids, task_name, condition, seeds=(42,)):
 
     return all_seed_means
 
-########################################## MDM ###########################################################
-"""def run_nested_cv(subject_ids, task_name, condition, seeds=(42,)):
-    print(f"\n========== {task_name} | {condition} ==========")
-    subj_labels = np.array([id2label[s] for s in subject_ids])
-
-    all_seed_means = []
-
-    # simple MDM settings to compare
-    param_grid = {
-        "metric": ["riemann", "logeuclid", "euclid"]
-    }
-
-    for seed in seeds:
-        print(f"\n--- Random state {seed} ---")
-        inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=seed)
-        outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-
-        inner_scores = []
-        outer_scores = []
-        cm_total = np.zeros((2, 2), dtype=int)
-
-        for fold, (train_idx, test_idx) in enumerate(outer_cv.split(subject_ids, subj_labels), 1):
-            print(f"Outer fold {fold}")
-
-            train_subjects = subject_ids[train_idx]
-            test_subjects = subject_ids[test_idx]
-
-            X_train, y_train = make_xy(train_subjects, condition)
-            X_test, y_test = make_xy(test_subjects, condition)
-
-            best_score = -np.inf
-            best_metric = None
-
-            # manual inner CV over the metric choices
-            for metric in param_grid["metric"]:
-                cv_scores = []
-
-                for inner_train_idx, inner_val_idx in inner_cv.split(X_train, y_train):
-                    X_inner_train, X_inner_val = X_train[inner_train_idx], X_train[inner_val_idx]
-                    y_inner_train, y_inner_val = y_train[inner_train_idx], y_train[inner_val_idx]
-
-                    clf = MDM(metric=metric)
-                    clf.fit(X_inner_train, y_inner_train)
-                    y_val_pred = clf.predict(X_inner_val)
-
-                    score = balanced_accuracy_score(y_inner_val, y_val_pred)
-                    cv_scores.append(score)
-
-                mean_cv_score = np.mean(cv_scores)
-
-                if mean_cv_score > best_score:
-                    best_score = mean_cv_score
-                    best_metric = metric
-
-            # fit final model with best metric on the whole outer-train fold
-            best_clf = MDM(metric=best_metric)
-            best_clf.fit(X_train, y_train)
-            y_pred = best_clf.predict(X_test)
-
-            fold_score = balanced_accuracy_score(y_test, y_pred)
-            cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
-
-            cm_total += cm
-            inner_scores.append(best_score)
-            outer_scores.append(fold_score)
-
-            print("  best metric:", best_metric)
-            print("  subject-level test balanced accuracy:", fold_score)
-
-        inner_scores = np.array(inner_scores)
-        outer_scores = np.array(outer_scores)
-
-        print("\nAggregated subject-level confusion matrix:")
-        print(cm_total)
-        print(f"Seed {seed} results:")
-        print("Inner CV mean :", inner_scores.mean())
-        print("Outer CV mean :", outer_scores.mean())
-        print("Outer CV std  :", outer_scores.std())
-        print("Generalization gap:", inner_scores.mean() - outer_scores.mean())
-
-        all_seed_means.append(outer_scores.mean())
-
-    all_seed_means = np.array(all_seed_means)
-    print("\nAcross-seed summary:")
-    print("Mean outer CV across seeds:", all_seed_means.mean())
-    print("Std across seeds:", all_seed_means.std())
-
-    return all_seed_means"""
-
 # =========================================================
 # RUN
 # =========================================================
@@ -457,3 +343,5 @@ scores_wy_open = run_nested_cv(wy_subjects, "WY", "open")
 
 scores_ad_closed = run_nested_cv(ad_subjects, "AD", "closed")
 scores_wy_closed = run_nested_cv(wy_subjects, "WY", "closed")
+end = time.time()
+print("Total runtime (seconds):", end - start)
