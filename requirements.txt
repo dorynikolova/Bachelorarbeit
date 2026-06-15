@@ -1,0 +1,12 @@
+numpy
+scipy
+pandas
+pyreadstat
+scikit-learn
+mne
+PyWavelets
+joblib
+pyriemann
+matplotlib
+mne-features
+mne-connectivity
